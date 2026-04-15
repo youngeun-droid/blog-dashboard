@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+credentials.json
+__pycache__/
+*.pyc
+.DS_Store
+out/
+insta_session
+*.save
+.tools/
