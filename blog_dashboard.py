@@ -1828,8 +1828,72 @@ def extract_blog_candidates_from_html(page_html: str, limit: int = 5) -> list[di
     return links
 
 
+def _extract_main_page_results_requests(keyword: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Selenium 없이 requests+BeautifulSoup으로 네이버 통합검색 결과를 파싱합니다."""
+    search_url = f"https://search.naver.com/search.naver?sm=tab_hty.top&where=nexearch&ssc=tab.nx.all&query={requests.utils.quote(keyword)}"
+    session = make_session()
+    resp = session.get(search_url, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    results: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    # 제목 링크 셀렉터들
+    selectors = [
+        "a.title_link",
+        "a.api_txt_lines.total_tit",
+        "a.total_tit",
+        "a.link_tit",
+    ]
+    anchors = []
+    for sel in selectors:
+        anchors.extend(soup.select(f"#main_pack {sel}"))
+    if not anchors:
+        anchors = [a for a in soup.select("#main_pack a[href]") if a.get_text(strip=True) and len(a.get_text(strip=True)) >= 8]
+
+    for idx, a in enumerate(anchors[:120]):
+        title = " ".join(a.get_text(strip=True).split())[:120]
+        if len(title) < 6:
+            continue
+        href = a.get("href", "")
+        block = a.find_parent(["li", "article", "section", "div"])
+        block_text = " ".join(block.get_text(strip=True).split())[:220] if block else ""
+        block_hrefs = [link.get("href", "") for link in (block.select("a[href]")[:12] if block else [])]
+
+        channel, resolved_url = classify_main_result_channel(href, block_hrefs, block_text)
+        if channel == "other":
+            continue
+        dedupe_value = resolved_url or title
+        key = (channel, dedupe_value)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        results.append({
+            "title": title,
+            "url": resolved_url,
+            "channel": channel,
+            "y": idx,
+            "header": "",
+            "hint": block_text[:180],
+        })
+        if len(results) >= limit:
+            break
+
+    if not results:
+        html_links = extract_blog_candidates_from_html(resp.text, limit=max(limit, 10))
+        if html_links:
+            return [
+                {"title": item["title"], "url": item["url"], "channel": "blog", "y": 9999, "header": "HTML fallback", "hint": ""}
+                for item in html_links[:limit]
+            ]
+    return results[:limit]
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def extract_main_page_results(keyword: str, limit: int = 40) -> list[dict[str, Any]]:
+    if not SELENIUM_AVAILABLE:
+        return _extract_main_page_results_requests(keyword, limit)
     search_url = f"https://search.naver.com/search.naver?sm=tab_hty.top&where=nexearch&ssc=tab.nx.all&query={requests.utils.quote(keyword)}"
     driver = None
     try:
